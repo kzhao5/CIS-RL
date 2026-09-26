@@ -20,13 +20,13 @@ In reinforcement learning for large language models, rollouts are sampled by an 
 
 **Where the mismatch arises.** The two engines compute slightly different logits, and this per-logit perturbation before the softmax enters the ratio as an additive displacement in log-odds,
 
-$$\varepsilon_t = \operatorname{logit} p_t - \operatorname{logit} q_t, \qquad k_t = p_t + (1 - p_t)\, e^{\varepsilon_t}.$$
+$$\varepsilon_t = \mathrm{logit}\, p_t - \mathrm{logit}\, q_t, \qquad k_t = p_t + (1 - p_t)\, e^{\varepsilon_t}.$$
 
 The distribution of $\varepsilon_t$ is approximately invariant to token confidence, and it has a heavy tail on mixture-of-experts models. The spread of $k_t$ around one, in contrast, shrinks by orders of magnitude as $p_t \to 1$.
 
 **How to correct it.** Calibrated importance sampling (CIS) truncates the displacement at a single constant threshold, $e^{\varepsilon_t} \le 1 + \lambda$. Through the identity above, this becomes a ratio cap that tightens as the token becomes more confident:
 
-$$f_t = \min\bigl\{k_t,\; 1 + \lambda\,\varphi_t\bigr\}, \qquad \varphi_t = \max(1 - p_t,\ \kappa).$$
+$$f_t = \min\lbrace k_t,\; 1 + \lambda\,\varphi_t\rbrace, \qquad \varphi_t = \max(1 - p_t,\ \kappa).$$
 
 The floor $\kappa$ keeps the cap of confident tokens above the storage resolution of the log-probabilities. CIS replaces the unbounded second moment that governs the error of exact importance sampling with a term bounded by a constant, at the cost of a bias controlled by the truncated excess. It adds one elementwise operation and no forward or backward pass.
 
@@ -127,17 +127,6 @@ actor:
     cis_lambda: 2.3
     cis_kappa: 5.0e-3
 ```
-
-### What the code implements
-
-| Paper | Code |
-|---|---|
-| Algorithm 1: $p_m$, $k_m$, $\varphi_m = \max(1-p_m,\kappa)$, $f_m = \min\{k_m, 1+\lambda\varphi_m\}$ | `cis_weight` in [`cis/operator.py`](cis/operator.py); `action: cis` branch of `apply_rejection_sampling` in the patched `areal/utils/functional/functional.py` |
-| $\widehat G_{\mathrm{CIS}} = \frac1n\sum_m \operatorname{stopgrad}(f_m)\,\ell'_m$ | weight computed without gradient and multiplied into the token-level PPO loss (`cis_policy_loss`, AReaL decoupled loss) |
-| Training recipe (Appendix C) | `examples/math/gsm8k_cis.yaml` (added by the patch) and [`scripts/train.sh`](scripts/train.sh) |
-| Evaluation protocol (Appendix C) | [`eval/eval_suite.py`](eval/eval_suite.py) |
-| Static mismatch measurement (Appendix A) | [`measurement/`](measurement) |
-| Conditional statistics of $\varepsilon_t$ and $\log k_t$ (Appendix A) | [`measurement/summarize.py`](measurement/summarize.py) |
 
 ### Hyperparameters
 
