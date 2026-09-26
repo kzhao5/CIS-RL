@@ -1,6 +1,7 @@
 <div align="center">
 <br>
-<h2>Rethinking Training–Inference Mismatch in LLM Reinforcement Learning:<br>Where It Arises and How to Correct It</h2>
+<img src="assets/logo.png" width="480">
+<h3>Rethinking Training–Inference Mismatch in LLM Reinforcement Learning:<br>Where It Arises and How to Correct It</h3>
 
 [![Paper](https://img.shields.io/badge/Paper-coming%20soon-b31b1b.svg)](#-citation)
 [![Python](https://img.shields.io/badge/Python-3.11-3776ab.svg)](https://www.python.org/)
