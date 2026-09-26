@@ -1,0 +1,540 @@
+diff --git a/areal/api/cli_args.py b/areal/api/cli_args.py
+index 117642a2..3531ad3e 100644
+--- a/areal/api/cli_args.py
++++ b/areal/api/cli_args.py
+@@ -1444,9 +1444,11 @@ class RejectionSamplingConfig:
+     """Unified configuration for sample filtering based on policy divergence.
+ 
+     Filters tokens/sequences where the divergence between proximal policy
+-    and behavior policy exceeds a threshold, via two action modes:
++    and behavior policy exceeds a threshold, via three action modes:
+     - 'mask': zero out loss_mask (rejection, exclude from gradient)
+     - 'clamp': clamp importance weight to bounds (truncation, bounded gradient)
++    - 'cis': calibrated importance sampling, which caps the importance weight at
++      1 + cis_lambda * max(1 - p, cis_kappa), where p is the proximal probability
+ 
+     Supports direct ratio bounds and KL divergence estimators (K1/K2/K3),
+     at both token-level and sequence-level granularity.
+@@ -1458,7 +1460,7 @@ class RejectionSamplingConfig:
+             and ``metric='ratio'``, both the filtering decision and the correction
+             weight (behave_imp_weight) use the sequence-level geometric mean,
+             matching the old ``sequence_mask``/``sequence_truncate`` semantics.
+-        action: Action mode ('mask' or 'clamp').
++        action: Action mode ('mask', 'clamp', or 'cis').
+         metric: Divergence metric ('ratio', 'kl_k1', 'kl_k2', 'kl_k3').
+         agg: Aggregation method for sequence-level ('sum', 'mean', 'max').
+             For 'ratio' metric, aggregation is performed in log space (geometric
+@@ -1466,6 +1468,8 @@ class RejectionSamplingConfig:
+             For KL metrics, aggregation is arithmetic.
+         upper: Upper bound for filtering.
+         lower: Lower bound for filtering (optional).
++        cis_lambda: Threshold of CIS (only used when action='cis').
++        cis_kappa: Floor of CIS on 1 - p (only used when action='cis').
+     """
+ 
+     level: str = field(
+@@ -1486,8 +1490,11 @@ class RejectionSamplingConfig:
+             "'mask': zero out loss_mask for filtered tokens/sequences (rejection, "
+             "completely excludes from gradient computation). "
+             "'clamp': clamp importance weight to [lower, upper] bounds (truncation, "
+-            "tokens still participate in gradient but with bounded weight).",
+-            "choices": ["mask", "clamp"],
++            "tokens still participate in gradient but with bounded weight). "
++            "'cis': calibrated importance sampling, cap the importance weight at "
++            "1 + cis_lambda * max(1 - p, cis_kappa), where p is the proximal "
++            "probability of the token (token level, ratio metric).",
++            "choices": ["mask", "clamp", "cis"],
+         },
+     )
+     metric: str = field(
+@@ -1536,13 +1543,29 @@ class RejectionSamplingConfig:
+             "For 'kl_k1' metric: can be used to filter negative KL estimates."
+         },
+     )
++    cis_lambda: float = field(
++        default=2.3,
++        metadata={
++            "help": "Threshold lambda of CIS (action='cis'). The importance weight "
++            "is capped at 1 + cis_lambda * max(1 - p, cis_kappa), where p is the "
++            "proximal (training-side) probability of the sampled token."
++        },
++    )
++    cis_kappa: float = field(
++        default=5e-3,
++        metadata={
++            "help": "Floor kappa of CIS (action='cis') on the confidence term 1 - p, "
++            "which keeps the cap of confident tokens above the storage resolution "
++            "of the log-probabilities."
++        },
++    )
+ 
+     def __post_init__(self):
+         """Validate configuration."""
+         import warnings
+ 
+         _VALID_LEVELS = ("token", "sequence")
+-        _VALID_ACTIONS = ("mask", "clamp")
++        _VALID_ACTIONS = ("mask", "clamp", "cis")
+         _VALID_METRICS = ("ratio", "kl_k1", "kl_k2", "kl_k3")
+         _VALID_AGGS = ("sum", "mean", "max")
+ 
+@@ -1593,6 +1616,18 @@ class RejectionSamplingConfig:
+                 f"truncation). Got metric='{self.metric}'. "
+                 f"Use action='mask' for KL-based filtering."
+             )
++        # CIS is a token-level cap on the direct importance ratio.
++        if self.action == "cis":
++            if self.level != "token" or self.metric != "ratio":
++                raise ValueError(
++                    "action='cis' requires level='token' and metric='ratio', "
++                    f"got level='{self.level}' and metric='{self.metric}'."
++                )
++            if self.cis_lambda < 0 or self.cis_kappa < 0:
++                raise ValueError(
++                    "cis_lambda and cis_kappa must be non-negative, got "
++                    f"{self.cis_lambda} and {self.cis_kappa}."
++                )
+         # Clamp action defaults lower to 0.0 (consistent with old truncate behavior).
+         if self.action == "clamp" and self.lower is None:
+             self.lower = 0.0
+@@ -1917,6 +1952,9 @@ class vLLMConfig:
+     seed: int = 1
+     skip_tokenizer_init: bool = False
+     enforce_eager: bool = False
++    # Custom all-reduce can fail with 'invalid argument' during CUDA graph
++    # capture on some nodes (same failure as SGLang's sgl_kernel); NCCL works.
++    disable_custom_all_reduce: bool = False
+     dtype: str = "bfloat16"
+     distributed_executor_backend: str = "mp"
+     # original
+diff --git a/areal/engine/fsdp_engine.py b/areal/engine/fsdp_engine.py
+index d4f1d343..5f6c28aa 100644
+--- a/areal/engine/fsdp_engine.py
++++ b/areal/engine/fsdp_engine.py
+@@ -1980,6 +1980,9 @@ class FSDPEngine(TrainEngine):
+                 is_qwen3_moe_model(self.model_config.model_type)
+                 or is_qwen3_vl_model(self.model_config.model_type)
+                 or is_qwen3_5_model(self.model_config.model_type)
++                # deepseek_v2's modeling calls create_causal_mask, which cannot
++                # take the dict mask; with FA2 + packed inputs None is correct.
++                or self.model_config.model_type == "deepseek_v2"
+             ):
+                 mb["attention_mask"] = None
+                 padded_mb["attention_mask"] = None
+diff --git a/areal/engine/vllm_ext/areal_vllm_server.py b/areal/engine/vllm_ext/areal_vllm_server.py
+index 4cc806a1..b7a9aca0 100644
+--- a/areal/engine/vllm_ext/areal_vllm_server.py
++++ b/areal/engine/vllm_ext/areal_vllm_server.py
+@@ -368,9 +368,12 @@ if __name__ == "__main__":
+     def _areal_build_app(args, supported_tasks=None, model_config=None):
+         """Monkey-patched build_app that replaces vLLM's /v1/completions route
+         with AReaL's wrapped version and adds AReaL custom endpoints."""
+-        app = _original_build_app(
+-            args, supported_tasks=supported_tasks, model_config=model_config
+-        )
++        import inspect as _inspect
++        _kw = {"supported_tasks": supported_tasks}
++        # vLLM <=0.16 build_app has no model_config parameter; newer versions do.
++        if "model_config" in _inspect.signature(_original_build_app).parameters:
++            _kw["model_config"] = model_config
++        app = _original_build_app(args, **_kw)
+         # Remove vLLM's /v1/completions POST route so AReaL's takes precedence
+         app.router.routes = [
+             route
+diff --git a/areal/experimental/openai/client.py b/areal/experimental/openai/client.py
+index c2edfb71..d5289893 100644
+--- a/areal/experimental/openai/client.py
++++ b/areal/experimental/openai/client.py
+@@ -535,7 +535,9 @@ def concat_prompt_token_ids_with_parent(
+         tools=tools,
+         add_generation_prompt=True,
+         tokenize=True,
+-        **extra_body.get("chat_template_kwargs", {}),
++        # Default to no thinking block (matches RLVRWorkflow); callers can override
++        # via extra_body.chat_template_kwargs.
++        **{"enable_thinking": False, **extra_body.get("chat_template_kwargs", {})},
+     )
+     parent_eos_num = parent_tokens.count(eos_token_id)
+     if parent_eos_num > 0:
+@@ -770,7 +772,7 @@ class AsyncCompletionsWithReward(BaseAsyncCompletions):
+                 tools=tools_list,
+                 add_generation_prompt=True,
+                 tokenize=True,
+-                **extra_body.get("chat_template_kwargs", {}),
++                **{"enable_thinking": False, **extra_body.get("chat_template_kwargs", {})},
+             )
+         elif self.chat_template_type == "concat":
+             concat_messages = (
+@@ -1225,7 +1227,7 @@ class AsyncResponsesWithReward(BaseAsyncResponses):
+                 tools=tools_list,
+                 add_generation_prompt=True,
+                 tokenize=True,
+-                **extra_body.get("chat_template_kwargs", {}),
++                **{"enable_thinking": False, **extra_body.get("chat_template_kwargs", {})},
+             )
+         elif self.chat_template_type == "concat":
+             remaining = interaction.remaining_messages
+diff --git a/areal/infra/controller/rollout_callback.py b/areal/infra/controller/rollout_callback.py
+index fc00cef1..ea64bd19 100644
+--- a/areal/infra/controller/rollout_callback.py
++++ b/areal/infra/controller/rollout_callback.py
+@@ -29,7 +29,8 @@ class RolloutCallback:
+     """
+ 
+     controller_addr: str
+-    request_timeout: float = 600.0
++    # 600s is too short for disk weight reloads of a 30B model on shared storage.
++    request_timeout: float = 7200.0
+ 
+     def _post(self, endpoint: str, payload: dict[str, Any] | None = None) -> dict:
+         """Make synchronous HTTP POST to controller callback endpoint.
+diff --git a/areal/infra/data_service/controller/controller.py b/areal/infra/data_service/controller/controller.py
+index 2159cb5a..19ece790 100644
+--- a/areal/infra/data_service/controller/controller.py
++++ b/areal/infra/data_service/controller/controller.py
+@@ -70,7 +70,7 @@ class DataController:
+         self._workers_ready = threading.Event()
+         self._shutdown_requested = threading.Event()
+ 
+-    _WORKERS_READY_TIMEOUT: float = 30.0
++    _WORKERS_READY_TIMEOUT: float = 300.0  # forked-worker cold import on a shared filesystem can take ~50s
+ 
+     # -- Initialize --------------------------------------------------------
+ 
+diff --git a/areal/infra/remote_inf_engine.py b/areal/infra/remote_inf_engine.py
+index e6d5ae81..681b5a24 100644
+--- a/areal/infra/remote_inf_engine.py
++++ b/areal/infra/remote_inf_engine.py
+@@ -1528,7 +1528,7 @@ def _update_weights_from_disk(
+         update_name = names.update_weights_from_disk(
+             experiment_name, trial_name, model_version
+         )
+-        save_timestamp = float(name_resolve.wait(update_name, timeout=120))
++        save_timestamp = float(name_resolve.wait(update_name, timeout=3600))  # saving a 57GB HF checkpoint can exceed 120s
+         load_timestamp = datetime.now().timestamp()
+ 
+         # Get requests from backend with version for LoRA name
+diff --git a/areal/infra/scheduler/local.py b/areal/infra/scheduler/local.py
+index 4522decb..81db320a 100644
+--- a/areal/infra/scheduler/local.py
++++ b/areal/infra/scheduler/local.py
+@@ -101,7 +101,7 @@ class LocalScheduler(Scheduler):
+         self,
+         gpu_devices: list[int] | None = None,
+         log_dir: str | None = None,
+-        startup_timeout: float = 30.0,
++        startup_timeout: float = 300.0,  # slow shared filesystems
+         health_check_interval: float = 1.0,
+         *,
+         experiment_name: str | None = None,
+@@ -285,7 +285,7 @@ class LocalScheduler(Scheduler):
+         session: aiohttp.ClientSession,
+         host: str,
+         port: int,
+-        timeout: float = 60,
++        timeout: float = 300,  # cold import can take ~80s per forked worker
+     ) -> bool:
+         url = f"http://{format_hostport(host, port)}/health"
+         deadline = time.time() + timeout
+diff --git a/areal/utils/functional/functional.py b/areal/utils/functional/functional.py
+index 6d82f176..2899b52d 100644
+--- a/areal/utils/functional/functional.py
++++ b/areal/utils/functional/functional.py
+@@ -191,10 +191,12 @@ def apply_rejection_sampling(
+ ) -> RejectionSamplingResult:
+     """Apply rejection sampling based on divergence between proximal and behavior policy.
+ 
+-    Supports two action modes:
++    Supports three action modes:
+     - 'mask': zero out loss_mask for tokens/sequences exceeding threshold (rejection)
+     - 'clamp': clamp importance weight to bounds for tokens/sequences exceeding
+       threshold (truncation, tokens still participate in gradient)
++    - 'cis': calibrated importance sampling, cap the token-level importance weight
++      at 1 + cis_lambda * max(1 - p, cis_kappa), where p is the proximal probability
+ 
+     Args:
+         proximal_logprobs: Proximal policy log-probabilities,
+@@ -403,6 +405,14 @@ def apply_rejection_sampling(
+         # Token level
+         if config.action == "mask":
+             in_bounds = _check_bounds(metric, config)
++        elif config.action == "cis":
++            # CIS: the cap 1 + lambda * max(1 - p, kappa) tightens as the
++            # proximal probability p of the sampled token increases.
++            p = torch.exp(proximal_logprobs.detach().float())
++            phi = torch.clamp(1.0 - p, min=config.cis_kappa)
++            behave_imp_weight = torch.minimum(
++                behave_imp_weight, 1.0 + config.cis_lambda * phi
++            )
+         else:
+             # clamp mode: directly clamp importance weight
+             behave_imp_weight = behave_imp_weight.clamp(
+@@ -418,7 +428,7 @@ def apply_rejection_sampling(
+         total_count = candidates.sum().item()
+         filtered_fraction = filtered_count / max(total_count, 1)
+     else:
+-        # clamp mode: loss_mask unchanged
++        # clamp and cis modes: loss_mask unchanged
+         updated_mask = loss_mask
+         # Report fraction of clamped tokens (for logging)
+         clamped_count = (
+diff --git a/areal/utils/hf_utils.py b/areal/utils/hf_utils.py
+index 6d98c62f..88d43e2d 100644
+--- a/areal/utils/hf_utils.py
++++ b/areal/utils/hf_utils.py
+@@ -63,6 +63,17 @@ def load_hf_tokenizer(
+         force_download=False,
+         **kwargs,
+     )
++    # transformers 5.3 resolves DeepSeek-V2's byte-level BPE tokenizer to the slow
++    # LlamaTokenizer, which produces different token ids (spaces lost). If a
++    # tokenizer.json exists, prefer the fast tokenizers backend.
++    if type(tokenizer).__name__ == "LlamaTokenizer":
++        try:
++            _fast = transformers.PreTrainedTokenizerFast.from_pretrained(
++                model_name_or_path, **kwargs
++            )
++            tokenizer = _fast
++        except Exception:
++            pass
+     if tokenizer.pad_token_id is None:
+         tokenizer.pad_token_id = tokenizer.eos_token_id
+     return tokenizer
+diff --git a/areal/v2/inference_service/data_proxy/tokenizer_proxy.py b/areal/v2/inference_service/data_proxy/tokenizer_proxy.py
+index f33369bb..953c6d38 100644
+--- a/areal/v2/inference_service/data_proxy/tokenizer_proxy.py
++++ b/areal/v2/inference_service/data_proxy/tokenizer_proxy.py
+@@ -25,6 +25,9 @@ class TokenizerProxy:
+         loop = asyncio.get_running_loop()
+ 
+         def _apply():
++            # Match RLVRWorkflow's default: no thinking block unless explicitly requested.
++            # (Qwen3 templates default to thinking mode, which burned the 1024-token budget.)
++            kw.setdefault("enable_thinking", False)
+             return _apply_chat_template(
+                 self._tok, messages, tokenize=True, add_generation_prompt=True, **kw
+             )
+diff --git a/areal/workflow/openai/math_agent.py b/areal/workflow/openai/math_agent.py
+index 5ee0bac7..08053fbc 100644
+--- a/areal/workflow/openai/math_agent.py
++++ b/areal/workflow/openai/math_agent.py
+@@ -46,7 +46,7 @@ class MathAgent:
+         if isinstance(messages, str):
+             messages = [{"role": "user", "content": messages}]
+         comp: ChatCompletion = await client.chat.completions.create(
+-            messages=messages, model="default", **self.kwargs
++            messages=messages, model="default", extra_body={"chat_template_kwargs": {"enable_thinking": False}}, **self.kwargs
+         )
+ 
+         return await self._reward_fn(
+@@ -81,6 +81,7 @@ class MultiTurnMathAgent:
+         for _ in range(self.max_turns):
+             response: ChatCompletion = await client.chat.completions.create(
+                 messages=messages,
++                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                 model="default",
+                 **self.kwargs,
+             )
+diff --git a/examples/math/gsm8k_cis.yaml b/examples/math/gsm8k_cis.yaml
+new file mode 100644
+index 00000000..9a29fe0a
+--- /dev/null
++++ b/examples/math/gsm8k_cis.yaml
+@@ -0,0 +1,197 @@
++experiment_name: gsm8k-cis
++trial_name: trial0
++
++seed: 1
++enable_offload: false
++total_train_epochs: 3
++tokenizer_path: ${actor.path}
++
++cluster:
++  n_nodes: 1
++  n_gpus_per_node: 8
++  fileroot: /tmp/areal/experiments
++  name_resolve:
++    type: nfs
++    nfs_record_root: /tmp/areal/name_resolve
++
++
++scheduler:
++  type: null
++
++rollout:
++  backend: "sglang:d4p1t1"
++  request_timeout: 10800
++  setup_timeout: 900
++  experiment_name: ${experiment_name}
++  trial_name: ${trial_name}
++  max_concurrent_rollouts: 256
++  queue_size: null
++  consumer_batch_size: ${train_dataset.batch_size}
++  max_head_offpolicyness: 2
++  enable_rollout_tracing: false
++  scheduling_spec: ${actor.scheduling_spec}
++  fileroot: ${cluster.fileroot}
++  tokenizer_path: ${tokenizer_path}
++  dump_to_file: false
++  agent:
++    mode: inline
++    export_style: individual
++    turn_discount: 1.0
++
++gconfig:
++  n_samples: 4
++  min_new_tokens: 0
++  max_new_tokens: 1024
++  max_tokens: 2048
++  greedy: false
++  temperature: 1.0
++
++actor:
++  backend: "fsdp:d4p1t1"
++  request_timeout: 10800
++  experiment_name: ${experiment_name}
++  trial_name: ${trial_name}
++  path: Qwen/Qwen2.5-1.5B-Instruct
++  init_from_scratch: false
++  disable_dropout: true
++  gradient_checkpointing: true
++  dtype: bfloat16
++  mb_spec:
++    max_tokens_per_mb: 4096
++    packing_algorithm: ffd
++  optimizer:
++    type: adam
++    lr: 3.0e-6
++    weight_decay: 0.01
++    beta1: 0.9
++    beta2: 0.999
++    eps: 1e-8
++    lr_scheduler_type: constant
++    gradient_clipping: 1.0
++    warmup_steps_proportion: 0.001
++  eps_clip: 0.2
++  eps_clip_higher: 0.28
++  temperature: ${gconfig.temperature}
++  reward_scaling: 10.0
++  reward_bias: -0.5
++  kl_ctl: 0.0
++  ppo_n_minibatches: 1
++  use_decoupled_loss: true
++  rejection_sampling:
++    level: token
++    action: cis
++    metric: ratio
++    cis_lambda: 2.3
++    cis_kappa: 5.0e-3
++  reward_norm:
++    mean_level: group
++    std_level: group
++    group_size: ${gconfig.n_samples}
++  adv_norm:
++    mean_level: batch
++    std_level: batch
++  weight_update_mode: xccl
++  max_new_tokens: ${gconfig.max_new_tokens}
++  scheduling_spec:
++    - task_type: worker
++      port_count: 2
++      gpu: 1
++      mem: 32
++      cmd: python3 -m areal.infra.rpc.rpc_server
++      env_vars: {}
++
++ref:
++  backend: ${actor.backend}
++  experiment_name: ${experiment_name}
++  trial_name: ${trial_name}
++  path: ${actor.path}
++  init_from_scratch: false
++  disable_dropout: true
++  dtype: ${actor.dtype}
++  mb_spec:
++    max_tokens_per_mb: 4096
++    packing_algorithm: ffd
++  optimizer: null
++  scheduling_strategy:
++    type: colocation
++    target: actor
++  scheduling_spec: ${actor.scheduling_spec}
++
++# SGLang
++sglang:
++  model_path: ${actor.path}
++  random_seed: ${seed}
++  skip_tokenizer_init: true
++  dtype: ${actor.dtype}
++  max_running_requests: null
++  context_length: 32768
++  mem_fraction_static: 0.8
++
++vllm:
++  model: ${actor.path}
++  seed: ${seed}
++  skip_tokenizer_init: false
++  disable_custom_all_reduce: true
++  dtype: ${actor.dtype}
++  max_model_len: 32768
++  gpu_memory_utilization: 0.8
++
++# datasets
++train_dataset:
++  batch_size: 256
++  shuffle: true
++  pin_memory: true
++  num_workers: 4
++  path: openai/gsm8k
++  type: rl
++  max_length: 1024
++  setup_timeout: 900
++
++valid_dataset:
++  batch_size: 256
++  pin_memory: true
++  num_workers: 4
++  path: openai/gsm8k
++  type: rl
++  setup_timeout: 900
++
++# Utilities
++saver:
++  experiment_name: ${experiment_name}
++  trial_name: ${trial_name}
++  fileroot: ${cluster.fileroot}
++  freq_epochs: 1
++  freq_steps: null
++  freq_secs: null
++
++recover:
++  mode: disabled
++  experiment_name: ${experiment_name}
++  trial_name: ${trial_name}
++  fileroot: ${cluster.fileroot}
++  freq_epochs: 1
++  freq_steps: null
++  freq_secs: 3600
++
++evaluator:
++  experiment_name: ${experiment_name}
++  trial_name: ${trial_name}
++  fileroot: ${cluster.fileroot}
++  freq_epochs: 1
++  freq_steps: null
++  freq_secs: null
++
++stats_logger:
++  experiment_name: ${experiment_name}
++  trial_name: ${trial_name}
++  fileroot: ${cluster.fileroot}
++  wandb:
++    mode: disabled
++
++perf_tracer:
++  experiment_name: ${experiment_name}
++  trial_name: ${trial_name}
++  fileroot: ${cluster.fileroot}
++  enabled: false
++  session_tracer:
++    enabled: false

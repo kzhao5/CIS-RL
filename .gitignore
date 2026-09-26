@@ -1,0 +1,14 @@
+# generated artefacts
+outputs/
+third_party/
+*.parquet
+*.log
+wandb/
+
+# python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.egg-info/
+.DS_Store

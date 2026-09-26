@@ -1,0 +1,12 @@
+# Measurement and evaluation environment (Python 3.12).
+#   pip install -r requirements/measure_eval.txt
+torch==2.11.0
+transformers==5.14.1
+vllm==0.26.0
+datasets==5.0.1
+math-verify==0.9.0
+numpy==2.3.5
+pandas==3.0.5
+pyarrow==25.0.0
+pytest
+# optional: flash-attn (measurement/recompute_train.py falls back to sdpa if it is missing)
