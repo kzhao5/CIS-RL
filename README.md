@@ -3,7 +3,8 @@
 <img src="assets/logo.png" width="480">
 <h3>Rethinking Training–Inference Mismatch in LLM Reinforcement Learning:<br>Where It Arises and How to Correct It</h3>
 
-[![Paper](https://img.shields.io/badge/Paper-coming%20soon-b31b1b.svg)](#-citation)
+[![arXiv](https://img.shields.io/badge/arXiv-coming%20soon-lightgrey.svg)](#-citation)
+[![PDF](https://img.shields.io/badge/Paper-PDF-b31b1b.svg)](paper/CIS.pdf)
 [![Python](https://img.shields.io/badge/Python-3.11-3776ab.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.9-ee4c2c.svg)](https://pytorch.org/)
 [![Framework](https://img.shields.io/badge/Built%20on-AReaL-6f42c1.svg)](https://github.com/areal-project/AReaL)
@@ -40,6 +41,7 @@ The floor $\kappa$ keeps the cap of confident tokens above the storage resolutio
 
 ## 📰 News
 
+- **[2026-09]** The paper is available as a PDF in [`paper/CIS.pdf`](paper/CIS.pdf); the arXiv version will follow.
 - **[2026-09]** Code release: the CIS operator, the AReaL integration, the training recipe for three mixture-of-experts models, the evaluation suite, and the mismatch measurement pipeline.
 
 ## 📊 Results
@@ -217,6 +219,7 @@ eval/eval_suite.py     greedy vLLM evaluation judged by math-verify
 measurement/           prompts, vLLM generation, teacher-forcing recompute, per-token join, summary
 tests/                 operator tests and an equivalence check against the patched AReaL
 requirements/          pinned versions of the two environments
+paper/CIS.pdf          the paper
 assets/                figures used in this README
 ```
 
