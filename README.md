@@ -3,8 +3,8 @@
 <img src="assets/logo.png" width="480">
 <h3>Rethinking Training–Inference Mismatch in LLM Reinforcement Learning:<br>Where It Arises and How to Correct It</h3>
 
-[![arXiv](https://img.shields.io/badge/arXiv-coming%20soon-lightgrey.svg)](#-citation)
-[![PDF](https://img.shields.io/badge/Paper-PDF-b31b1b.svg)](paper/CIS.pdf)
+[![arXiv](https://img.shields.io/badge/arXiv-2609.32444-b31b1b.svg)](https://arxiv.org/abs/2609.32444)
+[![PDF](https://img.shields.io/badge/Paper-PDF-1f6feb.svg)](paper/CIS.pdf)
 [![Python](https://img.shields.io/badge/Python-3.11-3776ab.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.9-ee4c2c.svg)](https://pytorch.org/)
 [![Framework](https://img.shields.io/badge/Built%20on-AReaL-6f42c1.svg)](https://github.com/areal-project/AReaL)
@@ -41,12 +41,12 @@ The floor $\kappa$ keeps the cap of confident tokens above the storage resolutio
 
 ## 📰 News
 
-- **[2026-09]** The paper is available as a PDF in [`paper/CIS.pdf`](paper/CIS.pdf); the arXiv version will follow.
+- **[2026-09]** The paper is on arXiv: [arXiv:2609.32444](https://arxiv.org/abs/2609.32444). A PDF copy is also in [`paper/CIS.pdf`](paper/CIS.pdf).
 - **[2026-09]** Code release: the CIS operator, the AReaL integration, the training recipe for three mixture-of-experts models, the evaluation suite, and the mismatch measurement pipeline.
 
 ## 📊 Results
 
-RL on GSM8K with the same recipe for every method; held-out accuracy (%) averaged over GSM8K, MATH-500, SVAMP, Minerva Math, and OlympiadBench, with mean ± standard deviation over three seeds. The full comparison with nine baselines is in Table 1 of the paper.
+RL on GSM8K with the same recipe for every method; held-out accuracy (%) averaged over GSM8K, MATH-500, SVAMP, Minerva Math, and OlympiadBench, with mean ± standard deviation over three seeds. The full comparison with nine baselines is in Table 1 of the [paper](https://arxiv.org/abs/2609.32444).
 
 | Model | No correction | TIS | Best baseline | **CIS** |
 |---|---|---|---|---|
@@ -225,7 +225,16 @@ assets/                figures used in this README
 
 ## 📖 Citation
 
-The BibTeX entry will be added when the paper is public.
+If you find this work useful, please cite:
+
+```bibtex
+@article{yu2026rethinking,
+  title   = {Rethinking Training--Inference Mismatch in {LLM} Reinforcement Learning: Where It Arises and How to Correct It},
+  author  = {Yu, Tianrun and Zhao, Kaixiang and Li, Shangzhe and Yang, Yuxiao and Jenkins, Porter and Zhang, Weitong and Killian, Taylor W.},
+  journal = {arXiv preprint arXiv:2609.32444},
+  year    = {2026}
+}
+```
 
 ## 🤝 Acknowledgments
 
