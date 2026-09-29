@@ -5,6 +5,7 @@
 
 [![arXiv](https://img.shields.io/badge/arXiv-2609.32444-b31b1b.svg)](https://arxiv.org/abs/2609.32444)
 [![PDF](https://img.shields.io/badge/Paper-PDF-1f6feb.svg)](paper/CIS.pdf)
+[![Project Page](https://img.shields.io/badge/Project-Page-0f8a6c.svg)](https://kzhao5.github.io/CIS-website/)
 [![Python](https://img.shields.io/badge/Python-3.11-3776ab.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.9-ee4c2c.svg)](https://pytorch.org/)
 [![Framework](https://img.shields.io/badge/Built%20on-AReaL-6f42c1.svg)](https://github.com/areal-project/AReaL)
@@ -41,6 +42,7 @@ The floor $\kappa$ keeps the cap of confident tokens above the storage resolutio
 
 ## 📰 News
 
+- **[2026-09]** The project page is live: [kzhao5.github.io/CIS-website](https://kzhao5.github.io/CIS-website/).
 - **[2026-09]** The paper is on arXiv: [arXiv:2609.32444](https://arxiv.org/abs/2609.32444). A PDF copy is also in [`paper/CIS.pdf`](paper/CIS.pdf).
 - **[2026-09]** Code release: the CIS operator, the AReaL integration, the training recipe for three mixture-of-experts models, the evaluation suite, and the mismatch measurement pipeline.
 
